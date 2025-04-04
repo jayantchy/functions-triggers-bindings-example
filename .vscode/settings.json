@@ -1,0 +1,8 @@
+{
+    "azureFunctions.deploySubpath": "functions-triggers-bindings-example/ExampleFunctionProject/bin/Release/netcoreapp3.1/publish",
+    "azureFunctions.projectLanguage": "C#",
+    "azureFunctions.projectRuntime": "~3",
+    "debug.internalConsoleOptions": "neverOpen",
+    "azureFunctions.projectSubpath": "functions-triggers-bindings-example/ExampleFunctionProject",
+    "azureFunctions.preDeployTask": "publish (functions)"
+}

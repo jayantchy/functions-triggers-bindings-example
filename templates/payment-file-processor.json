@@ -1,0 +1,389 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "logicAppName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the Logic App"
+            }
+        },
+        "storageAccountName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the storage account where files are uploaded"
+            }
+        },
+        "containerName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the container where files are uploaded"
+            }
+        },
+        "tableStorageConnectionName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the Azure Table Storage connection"
+            }
+        },
+        "blobStorageConnectionName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the Azure Blob Storage connection"
+            }
+        },
+        "processingHistoryTable": {
+            "type": "string",
+            "defaultValue": "FileProcessingHistory",
+            "metadata": {
+                "description": "Table name for tracking processed files"
+            }
+        },
+        "destinationSftpConnection": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the destination SFTP connection"
+            }
+        },
+        "destinationSftpFolder": {
+            "type": "string",
+            "metadata": {
+                "description": "Destination folder path in SFTP"
+            }
+        },
+        "fileExtensionFilter": {
+            "type": "string",
+            "defaultValue": ".csv",
+            "metadata": {
+                "description": "File extension to filter for in Event Grid subscription"
+            }
+        }
+    },
+    "variables": {
+        "location": "[resourceGroup().location]",
+        "eventGridTopicName": "[concat(parameters('storageAccountName'), '-events')]",
+        "eventSubscriptionName": "[concat(parameters('logicAppName'), '-subscription')]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2019-05-01",
+            "name": "[parameters('logicAppName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "tableStorageConnection": {
+                            "type": "string"
+                        },
+                        "blobStorageConnection": {
+                            "type": "string"
+                        },
+                        "destinationSftpConnection": {
+                            "type": "string"
+                        }
+                    },
+                    "triggers": {
+                        "Event_Grid_Webhook": {
+                            "type": "Request",
+                            "kind": "Http",
+                            "inputs": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "topic": {
+                                                "type": "string"
+                                            },
+                                            "subject": {
+                                                "type": "string"
+                                            },
+                                            "eventType": {
+                                                "type": "string"
+                                            },
+                                            "eventTime": {
+                                                "type": "string"
+                                            },
+                                            "id": {
+                                                "type": "string"
+                                            },
+                                            "data": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "api": {
+                                                        "type": "string"
+                                                    },
+                                                    "clientRequestId": {
+                                                        "type": "string"
+                                                    },
+                                                    "requestId": {
+                                                        "type": "string"
+                                                    },
+                                                    "eTag": {
+                                                        "type": "string"
+                                                    },
+                                                    "contentType": {
+                                                        "type": "string"
+                                                    },
+                                                    "contentLength": {
+                                                        "type": "integer"
+                                                    },
+                                                    "blobType": {
+                                                        "type": "string"
+                                                    },
+                                                    "url": {
+                                                        "type": "string"
+                                                    },
+                                                    "sequencer": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            },
+                                            "specversion": {
+                                                "type": "string"
+                                            },
+                                            "datacontenttype": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "actions": {
+                        "For_each_event": {
+                            "type": "Foreach",
+                            "foreach": "@triggerBody()",
+                            "actions": {
+                                "Parse_Blob_URL": {
+                                    "type": "Compose",
+                                    "inputs": "@split(items('For_each_event')?['data']?['url'], '/')",
+                                    "runAfter": {}
+                                },
+                                "Get_File_Name": {
+                                    "type": "Compose",
+                                    "inputs": "@last(outputs('Parse_Blob_URL'))",
+                                    "runAfter": {
+                                        "Parse_Blob_URL": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Check_Processing_History": {
+                                    "type": "ApiConnection",
+                                    "inputs": {
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('tableStorageConnection')"
+                                            }
+                                        },
+                                        "method": "get",
+                                        "path": "/Tables/@{encodeURIComponent(parameters('processingHistoryTable'))}/entities(PartitionKey='@{encodeURIComponent('PaymentFiles')}',RowKey='@{encodeURIComponent(outputs('Get_File_Name'))}')"
+                                    },
+                                    "runAfter": {
+                                        "Get_File_Name": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Check_If_Already_Processed": {
+                                    "type": "If",
+                                    "expression": {
+                                        "and": [
+                                            {
+                                                "equals": [
+                                                    "@actions('Check_Processing_History')['status']",
+                                                    200
+                                                ]
+                                            },
+                                            {
+                                                "equals": [
+                                                    "@body('Check_Processing_History')?['ProcessedSuccessfully']",
+                                                    true
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Log_Already_Processed": {
+                                            "type": "Compose",
+                                            "inputs": "File @{outputs('Get_File_Name')} has already been processed successfully on @{body('Check_Processing_History')?['LastProcessedTime']}",
+                                            "runAfter": {}
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Check_Processing_History": [
+                                            "Succeeded",
+                                            "Failed"
+                                        ]
+                                    },
+                                    "else": {
+                                        "actions": {
+                                            "Get_Blob_Content": {
+                                                "type": "ApiConnection",
+                                                "inputs": {
+                                                    "host": {
+                                                        "connection": {
+                                                            "name": "@parameters('blobStorageConnection')"
+                                                        }
+                                                    },
+                                                    "method": "get",
+                                                    "path": "/datasets/default/files/@{encodeURIComponent(items('For_each_event')?['data']?['url'])}/content"
+                                                },
+                                                "runAfter": {}
+                                            },
+                                            "Send_To_Destination_SFTP": {
+                                                "type": "ApiConnection",
+                                                "inputs": {
+                                                    "host": {
+                                                        "connection": {
+                                                            "name": "@parameters('destinationSftpConnection')"
+                                                        }
+                                                    },
+                                                    "method": "post",
+                                                    "path": "/datasets/default/files",
+                                                    "queries": {
+                                                        "folderPath": "[parameters('destinationSftpFolder')]",
+                                                        "name": "@outputs('Get_File_Name')",
+                                                        "overwrite": true
+                                                    },
+                                                    "body": "@body('Get_Blob_Content')"
+                                                },
+                                                "runAfter": {
+                                                    "Get_Blob_Content": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Update_Processing_History": {
+                                                "type": "ApiConnection",
+                                                "inputs": {
+                                                    "host": {
+                                                        "connection": {
+                                                            "name": "@parameters('tableStorageConnection')"
+                                                        }
+                                                    },
+                                                    "method": "patch",
+                                                    "path": "/Tables/@{encodeURIComponent(parameters('processingHistoryTable'))}/entities(PartitionKey='@{encodeURIComponent('PaymentFiles')}',RowKey='@{encodeURIComponent(outputs('Get_File_Name'))}')",
+                                                    "body": {
+                                                        "ProcessedSuccessfully": true,
+                                                        "LastProcessedTime": "@{utcNow()}",
+                                                        "ProcessingAttempts": "@if(equals(actions('Check_Processing_History')['status'], 200), add(int(body('Check_Processing_History')?['ProcessingAttempts']), 1), 1)",
+                                                        "FileSize": "@items('For_each_event')?['data']?['contentLength']",
+                                                        "FileUrl": "@items('For_each_event')?['data']?['url']"
+                                                    }
+                                                },
+                                                "runAfter": {
+                                                    "Send_To_Destination_SFTP": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Create_Processing_History_If_Not_Exists": {
+                                                "type": "If",
+                                                "expression": {
+                                                    "equals": [
+                                                        "@actions('Check_Processing_History')['status']",
+                                                        404
+                                                    ]
+                                                },
+                                                "actions": {
+                                                    "Insert_Processing_Record": {
+                                                        "type": "ApiConnection",
+                                                        "inputs": {
+                                                            "host": {
+                                                                "connection": {
+                                                                    "name": "@parameters('tableStorageConnection')"
+                                                                }
+                                                            },
+                                                            "method": "post",
+                                                            "path": "/Tables/@{encodeURIComponent(parameters('processingHistoryTable'))}/entities",
+                                                            "body": {
+                                                                "PartitionKey": "PaymentFiles",
+                                                                "RowKey": "@outputs('Get_File_Name')",
+                                                                "ProcessedSuccessfully": true,
+                                                                "LastProcessedTime": "@{utcNow()}",
+                                                                "ProcessingAttempts": 1,
+                                                                "FileSize": "@items('For_each_event')?['data']?['contentLength']",
+                                                                "FileUrl": "@items('For_each_event')?['data']?['url']"
+                                                            }
+                                                        },
+                                                        "runAfter": {}
+                                                    }
+                                                },
+                                                "runAfter": {
+                                                    "Update_Processing_History": [
+                                                        "Failed"
+                                                    ]
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "runAfter": {}
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "tableStorageConnection": {
+                        "value": "[parameters('tableStorageConnectionName')]"
+                    },
+                    "blobStorageConnection": {
+                        "value": "[parameters('blobStorageConnectionName')]"
+                    },
+                    "destinationSftpConnection": {
+                        "value": "[parameters('destinationSftpConnection')]"
+                    }
+                }
+            }
+        },
+        {
+            "type": "Microsoft.EventGrid/systemTopics",
+            "apiVersion": "2020-04-01-preview",
+            "name": "[variables('eventGridTopicName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "source": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+                "topicType": "Microsoft.Storage.StorageAccounts"
+            }
+        },
+        {
+            "type": "Microsoft.EventGrid/systemTopics/eventSubscriptions",
+            "apiVersion": "2020-04-01-preview",
+            "name": "[concat(variables('eventGridTopicName'), '/', variables('eventSubscriptionName'))]",
+            "dependsOn": [
+                "[resourceId('Microsoft.EventGrid/systemTopics', variables('eventGridTopicName'))]",
+                "[resourceId('Microsoft.Logic/workflows', parameters('logicAppName'))]"
+            ],
+            "properties": {
+                "destination": {
+                    "properties": {
+                        "endpointUrl": "[listCallbackUrl(resourceId('Microsoft.Logic/workflows/triggers', parameters('logicAppName'), 'Event_Grid_Webhook'), '2019-05-01').value]"
+                    },
+                    "endpointType": "WebHook"
+                },
+                "filter": {
+                    "includedEventTypes": [
+                        "Microsoft.Storage.BlobCreated"
+                    ],
+                    "subjectBeginsWith": "[concat('/blobServices/default/containers/', parameters('containerName'))]",
+                    "subjectEndsWith": "[parameters('fileExtensionFilter')]",
+                    "enableAdvancedFilteringOnArrays": true
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "logicAppWebhookUrl": {
+            "type": "string",
+            "value": "[listCallbackUrl(resourceId('Microsoft.Logic/workflows/triggers', parameters('logicAppName'), 'Event_Grid_Webhook'), '2019-05-01').value]"
+        }
+    }
+}
